@@ -1,0 +1,101 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: cybersec-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cybersec}
+      POSTGRES_USER: ${POSTGRES_USER:-cybersec}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cybersec"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: cybersec-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cybersec-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-cybersec}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-cybersec}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - scan_results:/app/scan_results
+      - reports:/app/reports
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cybersec-worker
+    restart: unless-stopped
+    command: celery -A celery_app worker --loglevel=info --concurrency=4 -Q celery,scans,forensics,reports
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-cybersec}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-cybersec}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - scan_results:/app/scan_results
+      - reports:/app/reports
+
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cybersec-beat
+    restart: unless-stopped
+    command: celery -A celery_app beat --loglevel=info
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cybersec-frontend
+    restart: unless-stopped
+    ports:
+      - "4000:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  scan_results:
+  reports:
